@@ -1,0 +1,126 @@
+Como a analise do arquivo app.py ja havia sido realizada, segue o relatorio completo de consultoria de seguranca:
+
+==================================================
+RELATORIO DE AUDITORIA DE SEGURANCA - app.py
+==================================================
+
+1. VULNERABILIDADES IDENTIFICADAS
+
+A. SQL Injection (Injecao de SQL) - Severidade Critica
+- Localizacao: Linha 18 (query = f"SELECT * FROM usuarios WHERE usuario = '{username_input}' AND senha = '{password_input}'")
+- Mecanismo: Uso de format string (f-string) para interpolar entradas do usuario diretamente no comando SQL.
+- Impacto: Permite que um atacante manipule a estrutura logica da consulta (ex: injetando condicoes verdadeiras como ' OR '1'='1) para realizar contorno de autenticacao (Authentication Bypass), visualizar ou extrair dados sem credenciais validas.
+- Classificacao:
+  * CWE-89: Improper Neutralization of Special Elements used in an SQL Command
+  * OWASP Top 10: A03:2021 - Injection
+
+B. Armazenamento de Senhas em Texto Claro (Plaintext Storage) - Severidade Alta
+- Localizacao: Linhas 8 a 10 e 27
+- Mecanismo: As senhas estao sendo salvas e comparadas em texto puro ('SenhaSuperSecreta123').
+- Impacto: Caso ocorra vazamento de banco de dados ou exposicao de logs, as senhas de todos os usuarios sao comprometidas imediatamente.
+- Classificacao:
+  * CWE-256: Unprotected Storage of Credentials
+  * CWE-312: Cleartext Storage of Sensitive Information
+  * OWASP Top 10: A02:2021 - Cryptographic Failures
+
+C. Exposicao de Informacoes Sensíveis e Debug - Severidade Media
+- Localizacao: Linhas 20, 27 e 31
+- Mecanismo: Impressao em tela da consulta bruta montada (linha 20), exibicao dos dados do banco no login (linha 27) e mensagem detalhada de erro do SQLite (linha 31).
+- Impacto: Fornece a atacantes informacoes sobre a estrutura das tabelas e do banco de dados (Information Disclosure).
+- Classificacao:
+  * CWE-209: Generation of Error Message Containing Sensitive Information
+
+
+2. CVEs RELACIONADAS E DISTINCAO TECNICA
+
+No contexto de seguranca de software:
+- Falhas em codigo proprietario e scripts locais recebem a classificacao CWE (fraquezas arquiteturais/de codificacao).
+- Identificadores CVE sao emitidos quando a falha reside em um software, pacote ou biblioteca publica/comercial.
+
+Exemplos notorios de incidentes de seguranca e CVEs causadas pelo mesmo padrao de concatenacao SQL vulneravel:
+- CVE-2023-34362 (MOVEit Transfer): Falha massiva de SQL Injection explorada mundialmente para exfiltracao de dados.
+- CVE-2018-7600 (Drupalgeddon 2): Sanitizacao inadequada de requisicoes resultando em injecao.
+- CVE-2014-3704 (Drupal SQLi): SQL Injection direto em consultas preparadas construidas incorretamente.
+
+Fontes e documentacoes oficiais:
+- OWASP Top 10 Injection: https://owasp.org/Top10/A03_2021-Injection/
+- MITRE CWE-89: https://cwe.mitre.org/data/definitions/89.html
+- Documentacao oficial Python sqlite3 (Uso seguro de Placeholders):
+  https://docs.python.org/3/library/sqlite3.html#how-to-use-placeholders-to-bind-values-in-sql-queries
+
+
+3. RECOMENDACOES DE CORRECAO
+
+1. Consultas Parametrizadas (Prepared Statements):
+   Nunca interpolar ou concatenar variaveis em strings SQL. Utilize placeholders (?) nativos do driver sqlite3.
+
+2. Hashing Criptografico com Salt:
+   Substitua o armazenamento em texto puro por funcoes de derivacao de chave resistentes a forca bruta (ex: Argon2, bcrypt ou hashlib.pbkdf2_hmac).
+
+3. Remocao de Saidas de Debug:
+   Remover prints de queries e mensagens detalhadas de erro de sintaxe SQL em producao.
+
+
+4. PROPOSTA DE CODIGO CORRIGIDO
+
+import sqlite3
+import hashlib
+import os
+
+conn = sqlite3.connect(':memory:')
+cursor = conn.cursor()
+
+cursor.execute("""
+    CREATE TABLE usuarios (
+        id INTEGER PRIMARY KEY,
+        usuario TEXT UNIQUE,
+        salt TEXT,
+        senha_hash TEXT
+    )
+""")
+
+def gerar_hash_senha(senha: str, salt: bytes = None):
+    if salt is None:
+        salt = os.urandom(16)
+    chave = hashlib.pbkdf2_hmac('sha256', senha.encode('utf-8'), salt, 100000)
+    return salt.hex(), chave.hex()
+
+def cadastrar_usuario(usuario, senha):
+    salt_hex, hash_hex = gerar_hash_senha(senha)
+    cursor.execute(
+        "INSERT INTO usuarios (usuario, salt, senha_hash) VALUES (?, ?, ?)",
+        (usuario, salt_hex, hash_hex)
+    )
+
+cadastrar_usuario('admin', 'SenhaSuperSecreta123')
+cadastrar_usuario('user1', 'MinhaSenha456')
+conn.commit()
+
+print("--- TELA DE LOGIN (CORRIGIDA) ---")
+username_input = input("Usuário: ")
+password_input = input("Senha: ")
+
+cursor.execute(
+    "SELECT salt, senha_hash FROM usuarios WHERE usuario = ?",
+    (username_input,)
+)
+registro = cursor.fetchone()
+
+if registro:
+    salt_banco = bytes.fromhex(registro[0])
+    hash_esperado = registro[1]
+    _, hash_tentativa = gerar_hash_senha(password_input, salt_banco)
+
+    if hash_tentativa == hash_esperado:
+        print("Login bem-sucedido!")
+    else:
+        print("Falha no login: Credenciais invalidas.")
+else:
+    print("Falha no login: Credenciais invalidas.")
+
+conn.close()
+────────────────────────────────────────
+
+─ 1m18s · 7:21 PM
+
+
